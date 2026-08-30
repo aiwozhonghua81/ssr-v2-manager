@@ -94,30 +94,57 @@
 
 ## 快速开始
 
-### 1. 上传脚本
+### 一行安装（推荐）
 
-将 `ssr-v2-manager.sh` 上传到服务器，例如：
+Ubuntu / Debian 服务器直接复制下面这一行执行：
 
 ```bash
-/root/ssr-v2-manager.sh
+tmp=$(mktemp) && (curl -fsSL https://raw.githubusercontent.com/aiwozhonghua81/ssr-v2-manager/main/ssr-v2-manager.sh -o "$tmp" || wget -qO "$tmp" https://raw.githubusercontent.com/aiwozhonghua81/ssr-v2-manager/main/ssr-v2-manager.sh) && sudo bash "$tmp"; rm -f "${tmp:-}"
 ```
 
-### 2. 添加执行权限
+这条命令会：
+
+1. 创建临时脚本文件；
+2. 优先使用 `curl` 下载，失败时自动尝试 `wget`；
+3. 使用 `sudo bash` 启动 SSR V2 Manager；
+4. 脚本首次运行时安装 `ssr` 管理命令；
+5. 退出菜单后自动删除临时下载文件。
+
+安装完成后，以后直接运行：
 
 ```bash
+sudo ssr
+```
+
+即可再次进入管理菜单。
+
+> 安全提示：一行安装会从本仓库 `main` 分支下载脚本并以 root 权限运行。如果是生产服务器或对供应链安全有较高要求，建议先下载脚本、阅读源码并执行 `bash -n ssr-v2-manager.sh` 检查后再运行。
+
+### 仅使用 curl
+
+服务器已安装 `curl` 时，也可以使用：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/aiwozhonghua81/ssr-v2-manager/main/ssr-v2-manager.sh -o /tmp/ssr-v2-manager.sh && sudo bash /tmp/ssr-v2-manager.sh
+```
+
+### 仅使用 wget
+
+服务器没有 `curl` 时：
+
+```bash
+wget -qO /tmp/ssr-v2-manager.sh https://raw.githubusercontent.com/aiwozhonghua81/ssr-v2-manager/main/ssr-v2-manager.sh && sudo bash /tmp/ssr-v2-manager.sh
+```
+
+### 手动安装
+
+如果希望先检查脚本再运行，可以手动下载：
+
+```bash
+wget https://raw.githubusercontent.com/aiwozhonghua81/ssr-v2-manager/main/ssr-v2-manager.sh
 chmod +x ssr-v2-manager.sh
-```
-
-### 3. 运行
-
-```bash
+bash -n ssr-v2-manager.sh
 sudo ./ssr-v2-manager.sh
-```
-
-或者：
-
-```bash
-sudo bash ssr-v2-manager.sh
 ```
 
 首次运行脚本会尝试把管理器安装到：
