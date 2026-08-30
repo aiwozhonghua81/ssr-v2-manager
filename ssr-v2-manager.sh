@@ -7,7 +7,7 @@ set -uo pipefail
 # Target: Ubuntu 22.04/24.04, Debian 11/12/13 (systemd)
 # ============================================================
 
-SCRIPT_VERSION="2.0.1"
+SCRIPT_VERSION="2.0.2"
 REPO_URL="https://github.com/ShadowsocksR-Live/shadowsocksr-native.git"
 REPO_BRANCH="master"
 SRC_DIR="/opt/shadowsocksr-native"
@@ -145,6 +145,111 @@ public_ip() {
     [[ -n "${ip}" ]] || ip="$(curl -4fsS --max-time 4 https://icanhazip.com 2>/dev/null | tr -d '\r\n' || true)"
     [[ -n "${ip}" ]] || ip="<服务器公网IP>"
     printf "%s" "${ip}"
+}
+
+normalize_city_name() {
+    local city="${1:-}" lower=""
+    city="$(printf '%s' "${city}" | tr -d '\r\n' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+    [[ -n "${city}" && "${city}" != "null" ]] || { printf ""; return; }
+
+    # 只保留城市名，不展示省份或行政区后缀。
+    city="${city%特别行政区}"
+    city="${city%自治州}"
+    city="${city%地区}"
+    city="${city%市}"
+
+    lower="$(printf '%s' "${city}" | tr '[:upper:]' '[:lower:]')"
+    case "${lower}" in
+        beijing|"beijing city") city="北京" ;;
+        shanghai|"shanghai city") city="上海" ;;
+        hangzhou) city="杭州" ;;
+        shenzhen) city="深圳" ;;
+        guangzhou) city="广州" ;;
+        qingdao) city="青岛" ;;
+        chengdu) city="成都" ;;
+        wuhan) city="武汉" ;;
+        nanjing) city="南京" ;;
+        fuzhou) city="福州" ;;
+        heyuan) city="河源" ;;
+        zhangjiakou) city="张家口" ;;
+        hohhot|huhehaote) city="呼和浩特" ;;
+        ulanqab|ulanchabu|wulanchabu) city="乌兰察布" ;;
+        tianjin|"tianjin city") city="天津" ;;
+        chongqing|"chongqing city") city="重庆" ;;
+        xiamen) city="厦门" ;;
+        suzhou) city="苏州" ;;
+        ningbo) city="宁波" ;;
+        hefei) city="合肥" ;;
+        jinan) city="济南" ;;
+        zhengzhou) city="郑州" ;;
+        changsha) city="长沙" ;;
+        nanchang) city="南昌" ;;
+        xian|"xi'an") city="西安" ;;
+        kunming) city="昆明" ;;
+        guiyang) city="贵阳" ;;
+        nanning) city="南宁" ;;
+        haikou) city="海口" ;;
+        shenyang) city="沈阳" ;;
+        dalian) city="大连" ;;
+        changchun) city="长春" ;;
+        harbin) city="哈尔滨" ;;
+        taiyuan) city="太原" ;;
+        shijiazhuang) city="石家庄" ;;
+        lanzhou) city="兰州" ;;
+        yinchuan) city="银川" ;;
+        xining) city="西宁" ;;
+        urumqi|urumchi) city="乌鲁木齐" ;;
+        lhasa) city="拉萨" ;;
+        "hong kong") city="香港" ;;
+        macao|macau) city="澳门" ;;
+        taipei) city="台北" ;;
+        kaohsiung) city="高雄" ;;
+        singapore) city="新加坡" ;;
+        tokyo) city="东京" ;;
+        osaka) city="大阪" ;;
+        seoul) city="首尔" ;;
+        bangkok) city="曼谷" ;;
+        "kuala lumpur") city="吉隆坡" ;;
+        "los angeles") city="洛杉矶" ;;
+        "san jose") city="圣何塞" ;;
+        "san francisco") city="旧金山" ;;
+        seattle) city="西雅图" ;;
+        "new york"|"new york city") city="纽约" ;;
+        london) city="伦敦" ;;
+        frankfurt|"frankfurt am main") city="法兰克福" ;;
+        paris) city="巴黎" ;;
+        amsterdam) city="阿姆斯特丹" ;;
+        sydney) city="悉尼" ;;
+    esac
+    printf "%s" "${city}"
+}
+
+server_city() {
+    local ip="${1:-}" json="" city="" pro=""
+    [[ -n "${ip}" && "${ip}" != "<服务器公网IP>" ]] || { printf "节点"; return; }
+
+    # 首选中文 IP 库，只读取 city；直辖市 city 为空时才回退到同级 pro。
+    json="$(curl -4fsSL --max-time 5 -A 'Mozilla/5.0'         "https://whois.pconline.com.cn/ipJson.jsp?ip=${ip}&json=true" 2>/dev/null || true)"
+    if [[ -n "${json}" ]]; then
+        city="$(printf '%s' "${json}" | jq -r '.city // empty' 2>/dev/null || true)"
+        pro="$(printf '%s' "${json}" | jq -r '.pro // empty' 2>/dev/null || true)"
+        if [[ -z "${city}" && ( "${pro}" == *市 || "${pro}" == *特别行政区 ) ]]; then
+            city="${pro}"
+        fi
+    fi
+
+    # HTTPS 国际 IP 库兜底。
+    if [[ -z "${city}" ]]; then
+        json="$(curl -4fsSL --max-time 5 "https://ipwho.is/${ip}" 2>/dev/null || true)"
+        [[ -n "${json}" ]] && city="$(printf '%s' "${json}" | jq -r 'select(.success != false) | .city // empty' 2>/dev/null || true)"
+    fi
+    if [[ -z "${city}" ]]; then
+        city="$(curl -4fsSL --max-time 5 "https://ipapi.co/${ip}/city/" 2>/dev/null | tr -d '\r\n' || true)"
+    fi
+
+    city="$(normalize_city_name "${city}")"
+    [[ -n "${city}" ]] || city="节点"
+    printf "%s" "${city}"
 }
 
 cfg_get() {
@@ -487,9 +592,11 @@ status_ssr() {
 show_info() {
     is_installed || { warn "SSR 未安装"; return; }
     ensure_jq || return
-    local ip port password method protocol obfs udp state
+    local ip city node_name port password method protocol obfs udp state
     ip="$(public_ip)"
+    city="$(server_city "${ip}")"
     port="$(current_port)"
+    node_name="${city}-${ip}-${port}"
     password="$(current_password)"
     method="$(current_method)"
     protocol="$(current_protocol)"
@@ -501,6 +608,8 @@ show_info() {
 
 ================ SSR 连接信息 ================
 状态       : ${state}
+节点名称   : ${node_name}
+城市       : ${city}
 服务器     : ${ip}
 端口       : ${port}
 密码       : ${password}
@@ -680,7 +789,7 @@ b64url() {
 generate_ssr_link() {
     is_installed || { warn "SSR 未安装"; return 1; }
     ensure_jq || return 1
-    local host port password method protocol obfs pparam oparam remarks pass64 raw query
+    local host city port password method protocol obfs pparam oparam remarks pass64 raw query
     host="$(public_ip)"
     [[ "${host}" != "<服务器公网IP>" ]] || {
         read -r -p "未自动获取公网 IP，请输入服务器公网 IP/域名: " host || true
@@ -693,7 +802,9 @@ generate_ssr_link() {
     obfs="$(current_obfs)"
     pparam="$(cfg_get '.protocol_param')"
     oparam="$(cfg_get '.obfs_param')"
-    remarks="SSR-${host}-${port}"
+    city="$(server_city "${host}")"
+    remarks="${city}-${host}-${port}"
+    info "节点名称：${remarks}"
     pass64="$(b64url "${password}")"
     query="obfsparam=$(b64url "${oparam}")&protoparam=$(b64url "${pparam}")&remarks=$(b64url "${remarks}")"
     raw="${host}:${port}:${protocol}:${method}:${obfs}:${pass64}/?${query}"
@@ -787,7 +898,11 @@ show_listening_port() {
 }
 
 show_public_ip() {
-    echo "公网 IPv4：$(public_ip)"
+    local ip city
+    ip="$(public_ip)"
+    city="$(server_city "${ip}")"
+    echo "公网 IPv4：${ip}"
+    echo "所在城市：${city}"
     echo "本机地址："
     ip -br addr show 2>/dev/null || true
 }
