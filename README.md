@@ -37,7 +37,7 @@
  2. 卸载 SSR                 17. 防火墙放行当前端口
  3. 启动 SSR                 18. 生成 SSR 链接
  4. 停止 SSR                 19. 生成 SSR 二维码
- 5. 重启 SSR                 20. 更新 SSR 源码/程序
+ 5. 重启 SSR                 20. 更新 SSR + 管理脚本
  6. 查看运行状态             21. 重新编译安装（保留配置）
  7. 查看连接信息             22. 系统环境检测
  8. 修改端口                 23. 查看监听端口
@@ -52,6 +52,8 @@
 ```
 
 ### 安装与生命周期
+
+> **自更新说明：** 菜单 `20. 更新 SSR + 管理脚本` 会先从本仓库 `main` 分支下载最新版管理脚本，执行 Bash 语法校验并原子替换 `/usr/local/sbin/ssr-manager`，随后再更新并重新编译 ShadowsocksR-native。旧管理脚本会备份到 `/usr/local/sbin/ssr-manager.bak`。
 
 - 快速安装：随机端口 + 随机密码 + 默认推荐参数
 - 自定义安装
@@ -167,6 +169,16 @@ sudo ssr
 ```
 
 即可进入数字菜单。
+
+### V2.0.2 及更早版本的一次性升级
+
+V2.0.2 本身还没有“菜单 20 自更新管理脚本”的能力，因此已部署的旧服务器需要先执行一次：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/aiwozhonghua81/ssr-v2-manager/main/ssr-v2-manager.sh -o /tmp/ssr-v2-manager.sh && sudo install -m 755 /tmp/ssr-v2-manager.sh /usr/local/sbin/ssr-manager && sudo ln -sfn /usr/local/sbin/ssr-manager /usr/local/bin/ssr && rm -f /tmp/ssr-v2-manager.sh
+```
+
+升级到 V2.0.3 之后，以后直接进入 `sudo ssr`，选择菜单 `20` 即可同时更新管理脚本和 SSR 服务端。
 
 ## 非交互命令
 
@@ -455,5 +467,5 @@ ShadowsocksR 属于较老的协议栈。上游项目的兼容性、协议实现�
 当前管理脚本：
 
 ```text
-SSR V2 Manager 2.0.2
+SSR V2 Manager 2.0.3
 ```

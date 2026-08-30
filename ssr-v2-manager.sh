@@ -7,7 +7,7 @@ set -uo pipefail
 # Target: Ubuntu 22.04/24.04, Debian 11/12/13 (systemd)
 # ============================================================
 
-SCRIPT_VERSION="2.0.2"
+SCRIPT_VERSION="2.0.3"
 REPO_URL="https://github.com/ShadowsocksR-Live/shadowsocksr-native.git"
 REPO_BRANCH="master"
 SRC_DIR="/opt/shadowsocksr-native"
@@ -21,6 +21,7 @@ MANAGER_PATH="/usr/local/sbin/ssr-manager"
 MANAGER_LINK="/usr/local/bin/ssr"
 BBR_CONF="/etc/sysctl.d/99-ssr-bbr.conf"
 TUNE_CONF="/etc/sysctl.d/99-ssr-network-tuning.conf"
+MANAGER_RAW_URL="https://raw.githubusercontent.com/aiwozhonghua81/ssr-v2-manager/main/ssr-v2-manager.sh"
 
 DEFAULT_METHOD="aes-128-ctr"
 DEFAULT_PROTOCOL="auth_aes128_md5"
@@ -825,30 +826,135 @@ show_qrcode() {
     qrencode -o "${out}" -s 8 "${SSR_LINK}" && info "二维码 PNG 已保存到服务器：${out}"
 }
 
+update_manager_script() {
+    local tmp backup new_version old_hash new_hash downloaded=false
+    tmp="$(mktemp)"
+    backup="${MANAGER_PATH}.bak"
+
+    info "检查并下载最新版 SSR V2 Manager..."
+    if command -v curl >/dev/null 2>&1; then
+        if curl -fsSL --connect-timeout 8 --max-time 30 \
+            -H 'Cache-Control: no-cache' \
+            "${MANAGER_RAW_URL}?t=$(date +%s)" -o "${tmp}"; then
+            downloaded=true
+        fi
+    fi
+    if [[ "${downloaded}" != "true" ]] && command -v wget >/dev/null 2>&1; then
+        if wget -q --timeout=30 -O "${tmp}" "${MANAGER_RAW_URL}?t=$(date +%s)"; then
+            downloaded=true
+        fi
+    fi
+    if [[ "${downloaded}" != "true" ]]; then
+        rm -f "${tmp}"
+        err "管理脚本下载失败，请检查 GitHub 网络连接。"
+        return 1
+    fi
+
+    if [[ ! -s "${tmp}" ]] || ! head -n 1 "${tmp}" | grep -q '^#!/usr/bin/env bash'; then
+        rm -f "${tmp}"
+        err "下载内容不是有效的 SSR 管理脚本。"
+        return 1
+    fi
+    if ! bash -n "${tmp}"; then
+        rm -f "${tmp}"
+        err "新版管理脚本 Bash 语法检查失败，已保留当前版本。"
+        return 1
+    fi
+
+    new_version="$(grep -m1 '^SCRIPT_VERSION=' "${tmp}" | sed -E 's/^SCRIPT_VERSION="([^"]+)".*/\1/' || true)"
+    old_hash="$(sha256sum "${MANAGER_PATH}" 2>/dev/null | awk '{print $1}' || true)"
+    new_hash="$(sha256sum "${tmp}" 2>/dev/null | awk '{print $1}' || true)"
+
+    if [[ -n "${old_hash}" && "${old_hash}" == "${new_hash}" ]]; then
+        rm -f "${tmp}"
+        ln -sfn "${MANAGER_PATH}" "${MANAGER_LINK}" 2>/dev/null || true
+        info "管理脚本已经是最新版本：${new_version:-${SCRIPT_VERSION}}"
+        return 0
+    fi
+
+    if [[ -f "${MANAGER_PATH}" ]]; then
+        cp -a "${MANAGER_PATH}" "${backup}" || {
+            rm -f "${tmp}"
+            err "无法备份当前管理脚本。"
+            return 1
+        }
+    fi
+
+    if ! install -m 755 "${tmp}" "${MANAGER_PATH}.new"; then
+        rm -f "${tmp}" "${MANAGER_PATH}.new"
+        err "新版管理脚本写入失败。"
+        return 1
+    fi
+    if ! mv -f "${MANAGER_PATH}.new" "${MANAGER_PATH}"; then
+        [[ -f "${backup}" ]] && cp -a "${backup}" "${MANAGER_PATH}" 2>/dev/null || true
+        rm -f "${tmp}" "${MANAGER_PATH}.new"
+        err "管理脚本替换失败，已尝试恢复旧版本。"
+        return 1
+    fi
+
+    chmod 755 "${MANAGER_PATH}"
+    ln -sfn "${MANAGER_PATH}" "${MANAGER_LINK}"
+    rm -f "${tmp}"
+    log "管理脚本已更新：${SCRIPT_VERSION} -> ${new_version:-latest}"
+    info "下次执行 sudo ssr 时将使用新版管理脚本。"
+    return 0
+}
+
 update_ssr() {
-    is_installed || { warn "SSR 未安装"; return; }
-    warn "更新服务端后，若上游协议实现发生变化，旧客户端可能需要同步更新。"
-    confirm "继续更新 ShadowsocksR-native 源码并重新编译？" || return
-    ensure_apt_tools || return
-    local oldbin="${BIN_PATH}.bak.$(date +%s)"
+    warn "此操作将同时更新：1) SSR V2 管理脚本；2) ShadowsocksR-native 源码/程序。"
+    confirm "继续执行完整更新？" || return
+
+    local manager_ok=false oldbin=""
+    if update_manager_script; then
+        manager_ok=true
+    else
+        warn "管理脚本更新失败，将继续尝试更新 SSR 服务端。"
+    fi
+
+    if ! is_installed; then
+        warn "SSR 服务端尚未安装，已跳过 ShadowsocksR-native 更新。"
+        [[ "${manager_ok}" == "true" ]] && log "管理脚本更新完成。"
+        return
+    fi
+
+    ensure_apt_tools || {
+        err "依赖安装/检查失败，SSR 服务端未更新。"
+        return
+    }
+
+    oldbin="${BIN_PATH}.bak.$(date +%s)"
     cp -a "${BIN_PATH}" "${oldbin}" || true
 
     if [[ -d "${SRC_DIR}/.git" ]]; then
         git -C "${SRC_DIR}" fetch origin "${REPO_BRANCH}" || { err "Git fetch 失败"; return; }
         git -C "${SRC_DIR}" reset --hard "origin/${REPO_BRANCH}" || { err "Git reset 失败"; return; }
         git -C "${SRC_DIR}" submodule update --init --recursive || true
-        build_ssr_existing || { cp -a "${oldbin}" "${BIN_PATH}" 2>/dev/null || true; return; }
+        build_ssr_existing || {
+            cp -a "${oldbin}" "${BIN_PATH}" 2>/dev/null || true
+            err "SSR 编译失败，已保留/恢复旧二进制。"
+            return
+        }
     else
-        build_ssr_fresh || { cp -a "${oldbin}" "${BIN_PATH}" 2>/dev/null || true; return; }
+        build_ssr_fresh || {
+            cp -a "${oldbin}" "${BIN_PATH}" 2>/dev/null || true
+            err "SSR 下载或编译失败，已保留/恢复旧二进制。"
+            return
+        }
     fi
 
     if restart_and_check; then
         rm -f "${oldbin}"
-        log "SSR 更新完成"
+        log "ShadowsocksR-native 更新完成。"
     else
-        warn "新版本启动失败，恢复旧二进制。"
+        warn "新版本 SSR 启动失败，恢复旧二进制。"
         cp -a "${oldbin}" "${BIN_PATH}" 2>/dev/null || true
         restart_and_check || true
+    fi
+
+    if [[ "${manager_ok}" == "true" ]]; then
+        log "完整更新完成：管理脚本 + SSR 服务端。"
+    else
+        warn "SSR 服务端已处理，但管理脚本未更新成功，请稍后重试菜单 20。"
     fi
 }
 
@@ -1016,7 +1122,7 @@ show_menu() {
     echo " 2. 卸载 SSR                 17. 防火墙放行当前端口"
     echo " 3. 启动 SSR                 18. 生成 SSR 链接"
     echo " 4. 停止 SSR                 19. 生成 SSR 二维码"
-    echo " 5. 重启 SSR                 20. 更新 SSR 源码/程序"
+    echo " 5. 重启 SSR                 20. 更新 SSR + 管理脚本"
     echo " 6. 查看运行状态             21. 重新编译安装（保留配置）"
     echo " 7. 查看连接信息             22. 系统环境检测"
     echo " 8. 修改端口                 23. 查看监听端口"
