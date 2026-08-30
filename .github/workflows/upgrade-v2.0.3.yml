@@ -1,0 +1,220 @@
+name: Apply SSR V2.0.3 self-update upgrade
+
+on:
+  push:
+    paths:
+      - '.github/workflows/upgrade-v2.0.3.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  upgrade:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Patch manager and README
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          p = Path('ssr-v2-manager.sh')
+          s = p.read_text()
+          s = s.replace('SCRIPT_VERSION="2.0.2"', 'SCRIPT_VERSION="2.0.3"', 1)
+
+          anchor = 'TUNE_CONF="/etc/sysctl.d/99-ssr-network-tuning.conf"\n'
+          addition = 'MANAGER_RAW_URL="https://raw.githubusercontent.com/aiwozhonghua81/ssr-v2-manager/main/ssr-v2-manager.sh"\n'
+          if addition not in s:
+              if anchor not in s:
+                  raise SystemExit('constant anchor not found')
+              s = s.replace(anchor, anchor + addition, 1)
+
+          updater = r'''update_manager_script() {
+              local tmp backup new_version old_hash new_hash downloaded=false
+              tmp="$(mktemp)"
+              backup="${MANAGER_PATH}.bak"
+
+              info "检查并下载最新版 SSR V2 Manager..."
+              if command -v curl >/dev/null 2>&1; then
+                  if curl -fsSL --connect-timeout 8 --max-time 30 \
+                      -H 'Cache-Control: no-cache' \
+                      "${MANAGER_RAW_URL}?t=$(date +%s)" -o "${tmp}"; then
+                      downloaded=true
+                  fi
+              fi
+              if [[ "${downloaded}" != "true" ]] && command -v wget >/dev/null 2>&1; then
+                  if wget -q --timeout=30 -O "${tmp}" "${MANAGER_RAW_URL}?t=$(date +%s)"; then
+                      downloaded=true
+                  fi
+              fi
+              if [[ "${downloaded}" != "true" ]]; then
+                  rm -f "${tmp}"
+                  err "管理脚本下载失败，请检查 GitHub 网络连接。"
+                  return 1
+              fi
+
+              if [[ ! -s "${tmp}" ]] || ! head -n 1 "${tmp}" | grep -q '^#!/usr/bin/env bash'; then
+                  rm -f "${tmp}"
+                  err "下载内容不是有效的 SSR 管理脚本。"
+                  return 1
+              fi
+              if ! bash -n "${tmp}"; then
+                  rm -f "${tmp}"
+                  err "新版管理脚本 Bash 语法检查失败，已保留当前版本。"
+                  return 1
+              fi
+
+              new_version="$(grep -m1 '^SCRIPT_VERSION=' "${tmp}" | sed -E 's/^SCRIPT_VERSION="([^"]+)".*/\1/' || true)"
+              old_hash="$(sha256sum "${MANAGER_PATH}" 2>/dev/null | awk '{print $1}' || true)"
+              new_hash="$(sha256sum "${tmp}" 2>/dev/null | awk '{print $1}' || true)"
+
+              if [[ -n "${old_hash}" && "${old_hash}" == "${new_hash}" ]]; then
+                  rm -f "${tmp}"
+                  ln -sfn "${MANAGER_PATH}" "${MANAGER_LINK}" 2>/dev/null || true
+                  info "管理脚本已经是最新版本：${new_version:-${SCRIPT_VERSION}}"
+                  return 0
+              fi
+
+              if [[ -f "${MANAGER_PATH}" ]]; then
+                  cp -a "${MANAGER_PATH}" "${backup}" || {
+                      rm -f "${tmp}"
+                      err "无法备份当前管理脚本。"
+                      return 1
+                  }
+              fi
+
+              if ! install -m 755 "${tmp}" "${MANAGER_PATH}.new"; then
+                  rm -f "${tmp}" "${MANAGER_PATH}.new"
+                  err "新版管理脚本写入失败。"
+                  return 1
+              fi
+              if ! mv -f "${MANAGER_PATH}.new" "${MANAGER_PATH}"; then
+                  [[ -f "${backup}" ]] && cp -a "${backup}" "${MANAGER_PATH}" 2>/dev/null || true
+                  rm -f "${tmp}" "${MANAGER_PATH}.new"
+                  err "管理脚本替换失败，已尝试恢复旧版本。"
+                  return 1
+              fi
+
+              chmod 755 "${MANAGER_PATH}"
+              ln -sfn "${MANAGER_PATH}" "${MANAGER_LINK}"
+              rm -f "${tmp}"
+              log "管理脚本已更新：${SCRIPT_VERSION} -> ${new_version:-latest}"
+              info "下次执行 sudo ssr 时将使用新版管理脚本。"
+              return 0
+          }
+
+          '''
+
+          if 'update_manager_script() {' not in s:
+              marker = 'update_ssr() {'
+              if marker not in s:
+                  raise SystemExit('update_ssr marker not found')
+              s = s.replace(marker, updater + marker, 1)
+
+          new_update = r'''update_ssr() {
+              warn "此操作将同时更新：1) SSR V2 管理脚本；2) ShadowsocksR-native 源码/程序。"
+              confirm "继续执行完整更新？" || return
+
+              local manager_ok=false oldbin=""
+              if update_manager_script; then
+                  manager_ok=true
+              else
+                  warn "管理脚本更新失败，将继续尝试更新 SSR 服务端。"
+              fi
+
+              if ! is_installed; then
+                  warn "SSR 服务端尚未安装，已跳过 ShadowsocksR-native 更新。"
+                  [[ "${manager_ok}" == "true" ]] && log "管理脚本更新完成。"
+                  return
+              fi
+
+              ensure_apt_tools || {
+                  err "依赖安装/检查失败，SSR 服务端未更新。"
+                  return
+              }
+
+              oldbin="${BIN_PATH}.bak.$(date +%s)"
+              cp -a "${BIN_PATH}" "${oldbin}" || true
+
+              if [[ -d "${SRC_DIR}/.git" ]]; then
+                  git -C "${SRC_DIR}" fetch origin "${REPO_BRANCH}" || { err "Git fetch 失败"; return; }
+                  git -C "${SRC_DIR}" reset --hard "origin/${REPO_BRANCH}" || { err "Git reset 失败"; return; }
+                  git -C "${SRC_DIR}" submodule update --init --recursive || true
+                  build_ssr_existing || {
+                      cp -a "${oldbin}" "${BIN_PATH}" 2>/dev/null || true
+                      err "SSR 编译失败，已保留/恢复旧二进制。"
+                      return
+                  }
+              else
+                  build_ssr_fresh || {
+                      cp -a "${oldbin}" "${BIN_PATH}" 2>/dev/null || true
+                      err "SSR 下载或编译失败，已保留/恢复旧二进制。"
+                      return
+                  }
+              fi
+
+              if restart_and_check; then
+                  rm -f "${oldbin}"
+                  log "ShadowsocksR-native 更新完成。"
+              else
+                  warn "新版本 SSR 启动失败，恢复旧二进制。"
+                  cp -a "${oldbin}" "${BIN_PATH}" 2>/dev/null || true
+                  restart_and_check || true
+              fi
+
+              if [[ "${manager_ok}" == "true" ]]; then
+                  log "完整更新完成：管理脚本 + SSR 服务端。"
+              else
+                  warn "SSR 服务端已处理，但管理脚本未更新成功，请稍后重试菜单 20。"
+              fi
+          }
+
+          reinstall_binary()'''
+
+          pattern = r'update_ssr\(\) \{.*?\n\}\n\nreinstall_binary\(\)'
+          s2, n = re.subn(pattern, new_update, s, count=1, flags=re.S)
+          if n != 1:
+              raise SystemExit(f'update_ssr replacement count={n}')
+          s = s2
+
+          s = s.replace('20. 更新 SSR 源码/程序', '20. 更新 SSR + 管理脚本')
+          p.write_text(s)
+
+          r = Path('README.md')
+          text = r.read_text()
+          text = text.replace('SSR V2 Manager 2.0.2', 'SSR V2 Manager 2.0.3')
+          text = text.replace('20. 更新 SSR 源码/程序', '20. 更新 SSR + 管理脚本')
+          marker = '### 安装与生命周期\n\n'
+          note = ('> **自更新说明：** 菜单 `20. 更新 SSR + 管理脚本` 会先从本仓库 `main` 分支下载最新版管理脚本，'
+                  '执行 Bash 语法校验并原子替换 `/usr/local/sbin/ssr-manager`，随后再更新并重新编译 ShadowsocksR-native。'
+                  '旧管理脚本会备份到 `/usr/local/sbin/ssr-manager.bak`。\n\n')
+          if note not in text and marker in text:
+              text = text.replace(marker, marker + note, 1)
+
+          bootstrap = '''\n### V2.0.2 及更早版本的一次性升级\n\nV2.0.2 本身还没有“菜单 20 自更新管理脚本”的能力，因此已部署的旧服务器需要先执行一次：\n\n```bash\ncurl -fsSL https://raw.githubusercontent.com/aiwozhonghua81/ssr-v2-manager/main/ssr-v2-manager.sh -o /tmp/ssr-v2-manager.sh && sudo install -m 755 /tmp/ssr-v2-manager.sh /usr/local/sbin/ssr-manager && sudo ln -sfn /usr/local/sbin/ssr-manager /usr/local/bin/ssr && rm -f /tmp/ssr-v2-manager.sh\n```\n\n升级到 V2.0.3 之后，以后直接进入 `sudo ssr`，选择菜单 `20` 即可同时更新管理脚本和 SSR 服务端。\n'''
+          if '### V2.0.2 及更早版本的一次性升级' not in text:
+              idx = text.find('\n## 非交互命令')
+              if idx != -1:
+                  text = text[:idx] + bootstrap + text[idx:]
+          r.write_text(text)
+          PY
+
+          bash -n ssr-v2-manager.sh
+          grep -q 'SCRIPT_VERSION="2.0.3"' ssr-v2-manager.sh
+          grep -q 'update_manager_script()' ssr-v2-manager.sh
+          grep -q '20. 更新 SSR + 管理脚本' ssr-v2-manager.sh
+
+      - name: Commit upgrade
+        shell: bash
+        run: |
+          rm -f .github/workflows/upgrade-v2.0.3.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add ssr-v2-manager.sh README.md .github/workflows/upgrade-v2.0.3.yml
+          git commit -m 'feat: update manager and SSR together (v2.0.3)'
+          git push origin HEAD:main
