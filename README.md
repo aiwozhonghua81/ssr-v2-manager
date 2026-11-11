@@ -1,10 +1,10 @@
-# SSR V2 Manager
+# 🇨🇳 SSR V2 Manager
 
 > 一个**单文件 Bash 脚本**，把「在服务器上装一个 ShadowsocksR 代理服务」这件事，压缩成**复制一行命令 + 点几个数字**。
 
 ---
 
-## 你是不是遇到过这种情况？
+## 🤔 你是不是遇到过这种情况？
 
 你买了一台海外服务器（阿里云、腾讯云、华为云、Vultr、搬瓦工都算），想用它给自己搭个代理。
 
@@ -33,7 +33,7 @@ sudo ssr
 
 ---
 
-## 目录导航
+## 📖 目录导航
 
 | 章节 | 内容 |
 | --- | --- |
@@ -54,7 +54,7 @@ sudo ssr
 ---
 
 <a id="一这是什么"></a>
-## 一、这是什么
+## 🧐 一、这是什么
 
 **一句话**：这是一个 Linux 服务器上的「ShadowsocksR 一键安装 + 可视化菜单管理」脚本。
 
@@ -73,7 +73,7 @@ sudo ssr
 ---
 
 <a id="二适合谁用"></a>
-## 二、适合谁用 / 能解决什么问题
+## 👥 二、适合谁用 / 能解决什么问题
 
 **适合：**
 
@@ -104,7 +104,7 @@ sudo ssr
 ---
 
 <a id="三效果速览"></a>
-## 三、效果速览
+## 🖼️ 三、效果速览
 
 ### 手动装 vs 用这个项目
 
@@ -151,7 +151,7 @@ UDP        : true
 ---
 
 <a id="四核心功能"></a>
-## 四、核心功能
+## ⚙️ 四、核心功能
 
 运行 `sudo ssr` 后你会看到完整菜单：
 
@@ -215,7 +215,7 @@ UDP        : true
 ---
 
 <a id="五环境要求"></a>
-## 五、环境要求
+## 🧱 五、环境要求
 
 | 项目 | 要求 | 说明 |
 | --- | --- | --- |
@@ -232,7 +232,7 @@ UDP        : true
 ---
 
 <a id="六快速上手"></a>
-## 六、快速上手
+## 🚀 六、快速上手
 
 ### 第 1 步：SSH 登录你的服务器
 
@@ -354,7 +354,7 @@ sudo ss -lntup | grep ssr
 ---
 
 <a id="七详细说明"></a>
-## 七、详细说明
+## 🎯 七、详细说明
 
 ### 7.1 快捷命令（不进菜单也能用）
 
@@ -657,7 +657,7 @@ sudo journalctl -u ssr-native -f
 ---
 
 <a id="八目录结构"></a>
-## 八、目录结构
+## 🗂️ 八、目录结构
 
 本仓库只有 3 个文件，非常干净：
 
@@ -678,18 +678,58 @@ config.json
 backups/
 ```
 
+画成树就是：
+
+```text
+ssr-v2-manager/                  ← 整个仓库就这么点东西
+├── ssr-v2-manager.sh            ★ 主角，唯一需要关心的文件（约 1200 行）
+├── README.md                    说明文档（你正在看的）
+└── .gitignore                   告诉 git 哪些文件不用提交
+```
+
 安装到服务器上之后，会额外多出这些东西（**不在本仓库里**，在服务器上）：
 
 ```text
-/usr/local/sbin/ssr-manager          # 管理脚本本体
-/usr/local/bin/ssr                   # 快捷命令
-/usr/local/bin/ssr-server            # SSR 服务端程序
-/etc/ssr-native/config.json          # 主配置
-/etc/ssr-native/backups/             # 备份
-/etc/systemd/system/ssr-native.service # systemd 单元
-/opt/shadowsocksr-native/            # 源码
-/etc/sysctl.d/99-ssr-bbr.conf         # BBR 配置
-/etc/sysctl.d/99-ssr-network-tuning.conf # 网络优化配置
+/usr/local/sbin/
+├── ssr-manager                  # 管理脚本本体（安装完成后就落在这）
+└── ssr-manager.bak              # 自更新前自动留的旧版备份
+
+/usr/local/bin/
+├── ssr                          # 快捷命令，软链到上面的 ssr-manager
+└── ssr-server                   # SSR 服务端程序本体（真正干活的那个）
+
+/etc/ssr-native/
+├── config.json                  # ★ 主配置：端口、密码、加密、协议、混淆全在这
+└── backups/                     # 每次改配置前自动存一份 config-<时间戳>.json
+
+/etc/systemd/system/
+└── ssr-native.service           # 让服务开机自启、崩了自动重启
+
+/opt/shadowsocksr-native/        # SSR 服务端源码（编译时才用到）
+
+/etc/sysctl.d/
+├── 99-ssr-bbr.conf              # 开 BBR 拥塞控制（让线路跑得更快）
+└── 99-ssr-network-tuning.conf   # 网络内核参数调优
+```
+
+一眼就能看出关键点：**仓库里只有 1 个脚本，装完之后系统里会散落 9 个文件**。这正是「一键安装」的本质——把一个脚本拆成一堆系统文件，铺到该去的位置。
+
+这些文件是怎么串起来的：
+
+```text
+   你敲 sudo ssr
+        │
+        ▼
+   /usr/local/bin/ssr ──(软链接)──→ /usr/local/sbin/ssr-manager
+                                          │（就是你下载的那个 .sh）
+                     ┌────────────────────┼────────────────────┐
+                     ▼                    ▼                    ▼
+              写 /etc/ssr-native/    起停 systemd 单元      编译 /opt/
+              config.json            ssr-native.service    shadowsocksr-native/
+                     │                    │                    │
+                     │                    ▼                    ▼
+                     │            启动 ssr-server ──→ /usr/local/bin/ssr-server
+                     └───────────────→ 读 config.json ──→ 对外提供服务
 ```
 
 各路径的详细用途见 [7.6 配置文件和文件位置](#76-配置文件和文件位置)。
@@ -697,7 +737,7 @@ backups/
 ---
 
 <a id="九常见问题排查"></a>
-## 九、常见问题排查
+## 🩺 九、常见问题排查
 
 | 现象 | 可能原因 | 怎么办 |
 | --- | --- | --- |
@@ -729,7 +769,7 @@ backups/
 ---
 
 <a id="十新手最常犯的-5-个错"></a>
-## 十、新手最常犯的 5 个错
+## 🙅 十、新手最常犯的 5 个错
 
 ### ❌ 错误 1：忘了在云控制台放行端口
 
@@ -776,7 +816,7 @@ sudo ssr restart
 ---
 
 <a id="十一安全注意事项"></a>
-## 十一、安全注意事项
+## 🩺 十一、安全注意事项
 
 **应该做的：**
 
@@ -806,7 +846,7 @@ sudo ssr restart
 ---
 
 <a id="十二卸载与回滚"></a>
-## 十二、卸载与回滚
+## 💼 十二、卸载与回滚
 
 ### 卸载 SSR 服务端
 
@@ -849,7 +889,7 @@ sudo systemctl daemon-reload
 ---
 
 <a id="十三许可证与致谢"></a>
-## 十三、许可证与致谢
+## 📜 十三、许可证与致谢
 
 ### 上游项目
 
